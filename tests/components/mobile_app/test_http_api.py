@@ -10,6 +10,9 @@ from nacl.secret import SecretBox
 import pytest
 
 from homeassistant.components.mobile_app.const import (
+    ATTR_APP_DATA,
+    ATTR_SUPPORTED_DEVICE_COMMANDS,
+    COMMAND_ALARM,
     CONF_CLOUDHOOK_URL,
     CONF_REMOTE_UI_URL,
     CONF_SECRET,
@@ -67,6 +70,28 @@ async def test_registration(
         entries[0].data["supports_encryption"]
         == REGISTER_CLEARTEXT["supports_encryption"]
     )
+
+
+async def test_registration_with_supported_device_commands(
+    hass: HomeAssistant, hass_client: ClientSessionGenerator
+) -> None:
+    """Test that a registration can advertise supported device commands."""
+    await async_setup_component(hass, DOMAIN, {DOMAIN: {}})
+
+    api_client = await hass_client()
+    registration = {
+        **REGISTER_CLEARTEXT,
+        "device_id": "alarm-device-id",
+        ATTR_APP_DATA: {ATTR_SUPPORTED_DEVICE_COMMANDS: [COMMAND_ALARM]},
+    }
+
+    resp = await api_client.post("/api/mobile_app/registrations", json=registration)
+
+    assert resp.status == HTTPStatus.CREATED
+    entries = hass.config_entries.async_entries(DOMAIN)
+    assert entries[0].data[ATTR_APP_DATA][ATTR_SUPPORTED_DEVICE_COMMANDS] == [
+        COMMAND_ALARM
+    ]
 
 
 async def test_registration_encryption(

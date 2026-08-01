@@ -13,7 +13,14 @@ from nacl.secret import SecretBox
 import pytest
 
 from homeassistant.components.camera import CameraEntityFeature
-from homeassistant.components.mobile_app.const import CONF_SECRET, DATA_DEVICES, DOMAIN
+from homeassistant.components.mobile_app.const import (
+    ATTR_APP_DATA,
+    ATTR_SUPPORTED_DEVICE_COMMANDS,
+    COMMAND_ALARM,
+    CONF_SECRET,
+    DATA_DEVICES,
+    DOMAIN,
+)
 from homeassistant.components.tag import EVENT_TAG_SCANNED
 from homeassistant.components.zone import DOMAIN as ZONE_DOMAIN
 from homeassistant.const import (
@@ -172,7 +179,9 @@ async def test_webhook_handle_fire_event(
     assert events[0].data["hello"] == "yo world"
 
 
-async def test_webhook_update_registration(webhook_client: TestClient) -> None:
+async def test_webhook_update_registration(
+    hass: HomeAssistant, webhook_client: TestClient
+) -> None:
     """Test that a we can update an existing registration via webhook."""
     register_resp = await webhook_client.post(
         "/api/mobile_app/registrations", json=REGISTER_CLEARTEXT
@@ -183,7 +192,13 @@ async def test_webhook_update_registration(webhook_client: TestClient) -> None:
 
     webhook_id = register_json[CONF_WEBHOOK_ID]
 
-    update_container = {"type": "update_registration", "data": UPDATE}
+    update_container = {
+        "type": "update_registration",
+        "data": {
+            **UPDATE,
+            ATTR_APP_DATA: {ATTR_SUPPORTED_DEVICE_COMMANDS: [COMMAND_ALARM]},
+        },
+    }
 
     update_resp = await webhook_client.post(
         f"/api/webhook/{webhook_id}", json=update_container
@@ -194,6 +209,8 @@ async def test_webhook_update_registration(webhook_client: TestClient) -> None:
     assert update_json["app_version"] == "2.0.0"
     assert CONF_WEBHOOK_ID not in update_json
     assert CONF_SECRET not in update_json
+    entry = hass.config_entries.async_entries(DOMAIN)[0]
+    assert entry.data[ATTR_APP_DATA][ATTR_SUPPORTED_DEVICE_COMMANDS] == [COMMAND_ALARM]
 
 
 async def test_webhook_handle_get_zones(
