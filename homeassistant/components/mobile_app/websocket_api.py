@@ -9,7 +9,16 @@ import voluptuous as vol
 from homeassistant.components import websocket_api
 from homeassistant.core import HomeAssistant, callback
 
-from .const import CONF_USER_ID, DATA_CONFIG_ENTRIES, DATA_PUSH_CHANNEL, DOMAIN
+from .const import (
+    ATTR_COMMAND_SUCCESS,
+    ATTR_HASS_COMMAND_ID,
+    CONF_USER_ID,
+    DATA_CONFIG_ENTRIES,
+    DATA_DEVICE_COMMAND_MANAGER,
+    DATA_PUSH_CHANNEL,
+    DOMAIN,
+)
+from .device_commands import DeviceCommandManager
 from .push_notification import PushChannel
 
 
@@ -18,6 +27,7 @@ def async_setup_commands(hass):
     """Set up the mobile app websocket API."""
     websocket_api.async_register_command(hass, handle_push_notification_channel)
     websocket_api.async_register_command(hass, handle_push_notification_confirm)
+    websocket_api.async_register_command(hass, handle_device_command_result)
 
 
 def _ensure_webhook_access(func):
@@ -47,6 +57,35 @@ def _ensure_webhook_access(func):
         func(hass, connection, msg)
 
     return with_webhook_access
+
+
+@callback
+@_ensure_webhook_access
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "mobile_app/command_result",
+        vol.Required("webhook_id"): str,
+        vol.Required(ATTR_HASS_COMMAND_ID): vol.All(str, vol.Length(min=1, max=64)),
+        vol.Required(ATTR_COMMAND_SUCCESS): bool,
+    }
+)
+def handle_device_command_result(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Handle the result of a command executed by a mobile app."""
+    manager: DeviceCommandManager = hass.data[DOMAIN][DATA_DEVICE_COMMAND_MANAGER]
+    if manager.async_handle_result(
+        msg["webhook_id"],
+        msg[ATTR_HASS_COMMAND_ID],
+        msg[ATTR_COMMAND_SUCCESS],
+    ):
+        connection.send_result(msg["id"])
+    else:
+        connection.send_error(
+            msg["id"], websocket_api.ERR_NOT_FOUND, "Command not found"
+        )
 
 
 @callback

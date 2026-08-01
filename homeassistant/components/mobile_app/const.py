@@ -26,6 +26,7 @@ DATA_STORE = "store"
 DATA_NOTIFY = "notify"
 DATA_PUSH_CHANNEL = "push_channel"
 DATA_PENDING_UPDATES = "pending_updates"
+DATA_DEVICE_COMMAND_MANAGER = "device_command_manager"
 
 ATTR_APP_DATA = "app_data"
 ATTR_APP_ID = "app_id"
@@ -44,6 +45,17 @@ ATTR_PUSH_RATE_LIMITS_MAXIMUM = "maximum"
 ATTR_PUSH_RATE_LIMITS_RESETS_AT = "resetsAt"
 ATTR_PUSH_RATE_LIMITS_SUCCESSFUL = "successful"
 ATTR_SUPPORTS_ENCRYPTION = "supports_encryption"
+ATTR_SUPPORTED_DEVICE_COMMANDS = "supported_device_commands"
+
+ATTR_COMMAND_SUCCESS = "success"
+ATTR_HASS_COMMAND_ID = "hass_command_id"
+
+COMMAND_ALARM = "command_alarm"
+
+ATTR_ALARM_HOUR = "alarm_hour"
+ATTR_ALARM_MESSAGE = "alarm_message"
+ATTR_ALARM_MINUTE = "alarm_minute"
+ATTR_ALARM_SKIP_UI = "alarm_skip_ui"
 
 ATTR_LIVE_UPDATE = "live_update"
 ATTR_START_LIVE_ACTIVITY_TOKEN = "start_live_activity_token"
@@ -111,6 +123,9 @@ SCHEMA_APP_DATA = vol.Schema(
         # push notifications.
         vol.Optional(ATTR_PUSH_WEBSOCKET_CHANNEL): cv.boolean,
         vol.Optional(ATTR_START_LIVE_ACTIVITY_TOKEN): cv.string,
+        vol.Optional(ATTR_SUPPORTED_DEVICE_COMMANDS): vol.All(
+            cv.ensure_list, [cv.string]
+        ),
     },
     extra=vol.ALLOW_EXTRA,
 )

@@ -17,6 +17,7 @@ from homeassistant.const import (
     ATTR_MANUFACTURER,
     ATTR_MODEL,
     CONF_WEBHOOK_ID,
+    EVENT_HOMEASSISTANT_STOP,
     Platform,
 )
 from homeassistant.core import Event, HomeAssistant
@@ -45,6 +46,7 @@ from .const import (
     CONF_USER_ID,
     DATA_CONFIG_ENTRIES,
     DATA_DELETED_IDS,
+    DATA_DEVICE_COMMAND_MANAGER,
     DATA_DEVICES,
     DATA_LIVE_ACTIVITY_CLEANUP_CANCEL,
     DATA_LIVE_ACTIVITY_TOKENS,
@@ -57,6 +59,7 @@ from .const import (
     STORAGE_VERSION,
     STORAGE_VERSION_MINOR,
 )
+from .device_commands import DeviceCommandManager
 from .helpers import async_is_local_only_user, savable_state
 from .http_api import RegistrationsView
 from .live_activity.store import async_cleanup_expired_live_activity_tokens
@@ -76,6 +79,7 @@ CONFIG_SCHEMA = cv.empty_config_schema(DOMAIN)
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Set up the mobile app component."""
+    device_command_manager = DeviceCommandManager(hass)
     store = _MobileAppStore(
         hass, STORAGE_VERSION, STORAGE_KEY, minor_version=STORAGE_VERSION_MINOR
     )
@@ -87,6 +91,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     hass.data[DOMAIN] = {
         DATA_CONFIG_ENTRIES: {},
         DATA_DELETED_IDS: app_config.get(DATA_DELETED_IDS, []),
+        DATA_DEVICE_COMMAND_MANAGER: device_command_manager,
         DATA_DEVICES: {},
         DATA_LIVE_ACTIVITY_TOKENS: app_config[DATA_LIVE_ACTIVITY_TOKENS],
         DATA_LIVE_ACTIVITY_CLEANUP_CANCEL: None,
@@ -94,6 +99,10 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         DATA_STORE: store,
         DATA_PENDING_UPDATES: {sensor_type: {} for sensor_type in SENSOR_TYPES},
     }
+
+    hass.bus.async_listen_once(
+        EVENT_HOMEASSISTANT_STOP, device_command_manager.async_shutdown
+    )
 
     # Tokens can expire while Home Assistant is stopped.
     hass.async_create_task(async_cleanup_expired_live_activity_tokens(hass))
@@ -240,6 +249,11 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         return False
 
     webhook_id = entry.data[CONF_WEBHOOK_ID]
+
+    command_manager: DeviceCommandManager = hass.data[DOMAIN][
+        DATA_DEVICE_COMMAND_MANAGER
+    ]
+    command_manager.async_cancel_for_webhook(webhook_id)
 
     webhook_unregister(hass, webhook_id)
     del hass.data[DOMAIN][DATA_CONFIG_ENTRIES][webhook_id]
