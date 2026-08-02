@@ -20,7 +20,11 @@ from homeassistant.components.mobile_app.const import (
     ATTR_PUSH_URL,
     ATTR_PUSH_WEBSOCKET_CHANNEL,
     ATTR_SUPPORTED_DEVICE_COMMANDS,
+    ATTR_TIMER_MESSAGE,
+    ATTR_TIMER_SECONDS,
+    ATTR_TIMER_SKIP_UI,
     COMMAND_ALARM,
+    COMMAND_TIMER,
     DATA_DEVICES,
     DOMAIN,
 )
@@ -101,6 +105,24 @@ def _llm_context(registration: AlarmRegistration) -> llm.LLMContext:
     )
 
 
+def _set_capabilities(
+    hass: HomeAssistant,
+    registration: AlarmRegistration,
+    commands: list[str],
+) -> None:
+    """Set the device command capabilities for a registration."""
+    hass.config_entries.async_update_entry(
+        registration.entry,
+        data={
+            **registration.entry.data,
+            ATTR_APP_DATA: {
+                **registration.entry.data[ATTR_APP_DATA],
+                ATTR_SUPPORTED_DEVICE_COMMANDS: commands,
+            },
+        },
+    )
+
+
 async def _subscribe_to_push(
     hass: HomeAssistant,
     hass_ws_client: WebSocketGenerator,
@@ -172,6 +194,73 @@ async def test_alarm_tool_capability_gating(
         },
     )
     assert mobile_app_llm.async_get_tools(hass, llm_context, "assist") is None
+
+
+@pytest.mark.parametrize(
+    ("commands", "expected_tools"),
+    [
+        pytest.param([COMMAND_ALARM], ["mobile_app_set_alarm"], id="alarm-only"),
+        pytest.param([COMMAND_TIMER], ["mobile_app_set_timer"], id="timer-only"),
+        pytest.param(
+            [COMMAND_ALARM, COMMAND_TIMER],
+            ["mobile_app_set_alarm", "mobile_app_set_timer"],
+            id="alarm-and-timer",
+        ),
+        pytest.param([], [], id="neither"),
+        pytest.param(["unknown_command"], [], id="unknown-command"),
+    ],
+)
+async def test_clock_tools_are_independently_capability_gated(
+    hass: HomeAssistant,
+    alarm_registration: AlarmRegistration,
+    commands: list[str],
+    expected_tools: list[str],
+) -> None:
+    """Test alarm and native timer capabilities expose only their own tools."""
+    _set_capabilities(hass, alarm_registration, commands)
+
+    result = mobile_app_llm.async_get_tools(
+        hass, _llm_context(alarm_registration), "assist"
+    )
+
+    assert ([] if result is None else [tool.name for tool in result.tools]) == (
+        expected_tools
+    )
+
+
+async def test_native_timer_prompt_disambiguates_home_assistant_timer(
+    hass: HomeAssistant, alarm_registration: AlarmRegistration
+) -> None:
+    """Test native timer guidance deterministically selects the phone tool."""
+    assert await async_setup_component(hass, "homeassistant", {})
+    _set_capabilities(hass, alarm_registration, [COMMAND_TIMER])
+    llm_context = _llm_context(alarm_registration)
+
+    result = await llm_component.async_get_tools(hass, llm_context, "assist")
+    tool_names = {tool.name for tool in result.tools}
+
+    assert "mobile_app_set_timer" in tool_names
+    assert "HassStartTimer" in tool_names
+    assert result.prompt is not None
+    assert (
+        "call mobile_app_set_timer instead of HassStartTimer, and never call both"
+        in result.prompt
+    )
+    assert "Home Assistant-managed timer" in result.prompt
+
+
+async def test_registration_without_native_timer_keeps_home_assistant_timer(
+    hass: HomeAssistant, alarm_registration: AlarmRegistration
+) -> None:
+    """Test existing registrations keep the Home Assistant timer behavior."""
+    assert await async_setup_component(hass, "homeassistant", {})
+    llm_context = _llm_context(alarm_registration)
+
+    result = await llm_component.async_get_tools(hass, llm_context, "assist")
+    tool_names = {tool.name for tool in result.tools}
+
+    assert "mobile_app_set_timer" not in tool_names
+    assert "HassStartTimer" in tool_names
 
 
 async def test_set_alarm_success(
@@ -319,6 +408,116 @@ async def test_set_alarm_failure(
     with pytest.raises(HomeAssistantError) as err:
         await task
     assert str(err.value) == "The requesting mobile app could not set the alarm"
+
+
+async def test_set_native_timer_success(
+    hass: HomeAssistant,
+    alarm_registration: AlarmRegistration,
+    hass_ws_client: WebSocketGenerator,
+) -> None:
+    """Test setting a native timer and receiving its execution result."""
+    _set_capabilities(hass, alarm_registration, [COMMAND_TIMER])
+    client = await _subscribe_to_push(hass, hass_ws_client)
+    llm_context = _llm_context(alarm_registration)
+    platform = mobile_app_llm.async_get_tools(hass, llm_context, "assist")
+    assert platform is not None
+    tool = platform.tools[0]
+    assert tool.name == "mobile_app_set_timer"
+
+    task = hass.async_create_task(
+        tool.async_call(
+            hass,
+            llm.ToolInput(
+                tool_name="mobile_app_set_timer",
+                tool_args={"duration_seconds": 300, "label": "Tea"},
+            ),
+            llm_context,
+        )
+    )
+
+    notification = (await client.receive_json())["event"]
+    assert notification["message"] == COMMAND_TIMER
+    command_id = notification["data"].pop(ATTR_HASS_COMMAND_ID)
+    assert notification["data"] == {
+        ATTR_TIMER_SECONDS: 300,
+        ATTR_TIMER_SKIP_UI: True,
+        ATTR_TIMER_MESSAGE: "Tea",
+    }
+
+    await client.send_json_auto_id(
+        {
+            "type": "mobile_app/command_result",
+            "webhook_id": WEBHOOK_ID,
+            ATTR_HASS_COMMAND_ID: command_id,
+            ATTR_COMMAND_SUCCESS: True,
+        }
+    )
+    assert (await client.receive_json())["success"]
+    assert await task == {"success": True}
+
+
+async def test_set_native_timer_failure(
+    hass: HomeAssistant,
+    alarm_registration: AlarmRegistration,
+    hass_ws_client: WebSocketGenerator,
+) -> None:
+    """Test a native timer failure reported by the mobile app."""
+    _set_capabilities(hass, alarm_registration, [COMMAND_TIMER])
+    client = await _subscribe_to_push(hass, hass_ws_client)
+    llm_context = _llm_context(alarm_registration)
+    platform = mobile_app_llm.async_get_tools(hass, llm_context, "assist")
+    assert platform is not None
+
+    task = hass.async_create_task(
+        platform.tools[0].async_call(
+            hass,
+            llm.ToolInput(
+                tool_name="mobile_app_set_timer",
+                tool_args={"duration_seconds": 90},
+            ),
+            llm_context,
+        )
+    )
+    notification = (await client.receive_json())["event"]
+
+    await client.send_json_auto_id(
+        {
+            "type": "mobile_app/command_result",
+            "webhook_id": WEBHOOK_ID,
+            ATTR_HASS_COMMAND_ID: notification["data"][ATTR_HASS_COMMAND_ID],
+            ATTR_COMMAND_SUCCESS: False,
+        }
+    )
+    assert (await client.receive_json())["success"]
+    with pytest.raises(HomeAssistantError) as err:
+        await task
+    assert str(err.value) == "The requesting mobile app could not set the timer"
+
+
+async def test_native_timer_tool_revalidates_capability(
+    hass: HomeAssistant, alarm_registration: AlarmRegistration
+) -> None:
+    """Test a timer capability is checked again when the tool is called."""
+    _set_capabilities(hass, alarm_registration, [COMMAND_TIMER])
+    llm_context = _llm_context(alarm_registration)
+    platform = mobile_app_llm.async_get_tools(hass, llm_context, "assist")
+    assert platform is not None
+    tool = platform.tools[0]
+
+    _set_capabilities(hass, alarm_registration, [])
+
+    with pytest.raises(
+        HomeAssistantError,
+        match="does not support setting timers",
+    ):
+        await tool.async_call(
+            hass,
+            llm.ToolInput(
+                tool_name="mobile_app_set_timer",
+                tool_args={"duration_seconds": 90},
+            ),
+            llm_context,
+        )
 
 
 async def test_set_alarm_route_failure_is_sanitized(
