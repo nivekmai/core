@@ -22,7 +22,11 @@ from .const import (
     ATTR_PUSH_URL,
     ATTR_PUSH_WEBSOCKET_CHANNEL,
     ATTR_SUPPORTED_DEVICE_COMMANDS,
+    ATTR_TIMER_MESSAGE,
+    ATTR_TIMER_SECONDS,
+    ATTR_TIMER_SKIP_UI,
     COMMAND_ALARM,
+    COMMAND_TIMER,
     CONF_USER_ID,
     DATA_CONFIG_ENTRIES,
     DATA_DEVICE_COMMAND_MANAGER,
@@ -136,22 +140,94 @@ class SetPhoneAlarmTool(Tool):
         return {"success": True}
 
 
+class SetPhoneTimerTool(Tool):
+    """Set a native timer on the mobile device that initiated Assist."""
+
+    name = "mobile_app_set_timer"
+    description = (
+        "Set a native countdown timer in the Clock app on the phone that initiated "
+        "this Assist request. Use this instead of HassStartTimer when the user asks "
+        "to create a timer on their phone; never call both tools for one timer."
+    )
+    parameters = vol.Schema(
+        {
+            vol.Required(
+                "duration_seconds", description="Countdown duration in seconds"
+            ): vol.All(int, vol.Range(min=1, max=86400)),
+            vol.Optional("label", description="Optional timer label"): vol.All(
+                cv.string, vol.Length(max=256)
+            ),
+        }
+    )
+
+    @override
+    async def async_call(
+        self,
+        hass: HomeAssistant,
+        tool_input: ToolInput,
+        llm_context: LLMContext,
+    ) -> JsonObjectType:
+        """Set a timer and wait for the phone to report execution."""
+        if (
+            capable_device := _get_capable_device(hass, llm_context, COMMAND_TIMER)
+        ) is None:
+            raise HomeAssistantError(
+                "The requesting mobile app does not support setting timers"
+            )
+
+        args = self.parameters(tool_input.tool_args)
+        webhook_id, device_id, context = capable_device
+        command_data: dict[str, int | str | bool] = {
+            ATTR_TIMER_SECONDS: args["duration_seconds"],
+            ATTR_TIMER_SKIP_UI: True,
+        }
+        if label := args.get("label"):
+            command_data[ATTR_TIMER_MESSAGE] = label
+
+        manager: DeviceCommandManager = hass.data[DOMAIN][DATA_DEVICE_COMMAND_MANAGER]
+        result = await manager.async_send(
+            webhook_id=webhook_id,
+            device_id=device_id,
+            command=COMMAND_TIMER,
+            data=command_data,
+            context=context,
+        )
+        if not result.success:
+            raise HomeAssistantError(
+                "The requesting mobile app could not set the timer"
+            )
+
+        return {"success": True}
+
+
 @callback
 def async_get_tools(
     hass: HomeAssistant, llm_context: LLMContext, api_id: str
 ) -> LLMTools | None:
     """Return tools supported by the mobile app that initiated Assist."""
-    if (
-        api_id != LLM_API_ASSIST
-        or _get_capable_device(hass, llm_context, COMMAND_ALARM) is None
-    ):
+    if api_id != LLM_API_ASSIST:
         return None
 
-    return LLMTools(
-        tools=[SetPhoneAlarmTool()],
-        prompt=(
+    tools: list[Tool] = []
+    prompt_parts: list[str] = []
+    if _get_capable_device(hass, llm_context, COMMAND_ALARM) is not None:
+        tools.append(SetPhoneAlarmTool())
+        prompt_parts.append(
             "When the user asks to set an alarm at a specific clock time on this "
             "phone, call mobile_app_set_alarm. The alarm is created by the Clock app on "
             "the device that initiated Assist."
-        ),
-    )
+        )
+    if _get_capable_device(hass, llm_context, COMMAND_TIMER) is not None:
+        tools.append(SetPhoneTimerTool())
+        prompt_parts.append(
+            "When the user asks to create a countdown timer on this phone, call "
+            "mobile_app_set_timer instead of HassStartTimer, and never call both. "
+            "mobile_app_set_timer creates a native timer in the phone's Clock app. "
+            "Use Home Assistant timer tools only when the user explicitly asks for a "
+            "Home Assistant-managed timer or to manage an existing Home Assistant timer."
+        )
+
+    if not tools:
+        return None
+
+    return LLMTools(tools=tools, prompt="\n".join(prompt_parts))
