@@ -18,6 +18,8 @@ from .const import (
     ATTR_ALARM_MINUTE,
     ATTR_ALARM_SKIP_UI,
     ATTR_APP_DATA,
+    ATTR_MEDIA_QUERY,
+    ATTR_MEDIA_TYPE,
     ATTR_PUSH_TOKEN,
     ATTR_PUSH_URL,
     ATTR_PUSH_WEBSOCKET_CHANNEL,
@@ -26,11 +28,14 @@ from .const import (
     ATTR_TIMER_SECONDS,
     ATTR_TIMER_SKIP_UI,
     COMMAND_ALARM,
+    COMMAND_PLAY_MEDIA,
     COMMAND_TIMER,
     CONF_USER_ID,
     DATA_CONFIG_ENTRIES,
     DATA_DEVICE_COMMAND_MANAGER,
     DOMAIN,
+    MEDIA_TYPE_AUDIOBOOK,
+    MEDIA_TYPE_MUSIC,
 )
 from .device_commands import DeviceCommandManager
 from .util import webhook_id_from_device_id
@@ -200,6 +205,64 @@ class SetPhoneTimerTool(Tool):
         return {"success": True}
 
 
+class PlayPhoneMediaTool(Tool):
+    """Resume or start media on the mobile device that initiated Assist."""
+
+    name = "mobile_app_play_media"
+    description = (
+        "Resume an audiobook or play music on the phone that initiated this Assist "
+        "request. Omit query to resume the user's current audiobook or play their "
+        "usual music; include query for a specific artist, album, song, or playlist."
+    )
+    parameters = vol.Schema(
+        {
+            vol.Required("media_type", description="Kind of audio to play"): vol.In(
+                (MEDIA_TYPE_AUDIOBOOK, MEDIA_TYPE_MUSIC)
+            ),
+            vol.Optional(
+                "query",
+                description="Optional artist, album, song, playlist, or audiobook",
+            ): vol.All(cv.string, vol.Length(min=1, max=256)),
+        }
+    )
+
+    @override
+    async def async_call(
+        self,
+        hass: HomeAssistant,
+        tool_input: ToolInput,
+        llm_context: LLMContext,
+    ) -> JsonObjectType:
+        """Request media playback and wait for the phone to accept it."""
+        if (
+            capable_device := _get_capable_device(hass, llm_context, COMMAND_PLAY_MEDIA)
+        ) is None:
+            raise HomeAssistantError(
+                "The requesting mobile app does not support media playback"
+            )
+
+        args = self.parameters(tool_input.tool_args)
+        webhook_id, device_id, context = capable_device
+        command_data = {ATTR_MEDIA_TYPE: args["media_type"]}
+        if query := args.get("query"):
+            command_data[ATTR_MEDIA_QUERY] = query
+
+        manager: DeviceCommandManager = hass.data[DOMAIN][DATA_DEVICE_COMMAND_MANAGER]
+        result = await manager.async_send(
+            webhook_id=webhook_id,
+            device_id=device_id,
+            command=COMMAND_PLAY_MEDIA,
+            data=command_data,
+            context=context,
+        )
+        if not result.success:
+            raise HomeAssistantError(
+                "The requesting mobile app could not start media playback"
+            )
+
+        return {"success": True}
+
+
 @callback
 def async_get_tools(
     hass: HomeAssistant, llm_context: LLMContext, api_id: str
@@ -225,6 +288,15 @@ def async_get_tools(
             "mobile_app_set_timer creates a native timer in the phone's Clock app. "
             "Use Home Assistant timer tools only when the user explicitly asks for a "
             "Home Assistant-managed timer or to manage an existing Home Assistant timer."
+        )
+    if _get_capable_device(hass, llm_context, COMMAND_PLAY_MEDIA) is not None:
+        tools.append(PlayPhoneMediaTool())
+        prompt_parts.append(
+            "When the user says to play or resume their book, call "
+            "mobile_app_play_media with media_type audiobook and normally omit query. "
+            "When the user asks to play music on this phone, call mobile_app_play_media "
+            "with media_type music. Omit query for their usual music, or include the "
+            "requested artist, album, song, or playlist."
         )
 
     if not tools:

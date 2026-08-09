@@ -51,6 +51,7 @@ ATTR_COMMAND_SUCCESS = "success"
 ATTR_HASS_COMMAND_ID = "hass_command_id"
 
 COMMAND_ALARM = "command_alarm"
+COMMAND_PLAY_MEDIA = "command_play_media"
 COMMAND_TIMER = "command_timer"
 
 ATTR_ALARM_HOUR = "alarm_hour"
@@ -61,6 +62,11 @@ ATTR_ALARM_SKIP_UI = "alarm_skip_ui"
 ATTR_TIMER_MESSAGE = "timer_message"
 ATTR_TIMER_SECONDS = "timer_seconds"
 ATTR_TIMER_SKIP_UI = "timer_skip_ui"
+
+ATTR_MEDIA_QUERY = "media_query"
+ATTR_MEDIA_TYPE = "media_type"
+MEDIA_TYPE_AUDIOBOOK = "audiobook"
+MEDIA_TYPE_MUSIC = "music"
 
 ATTR_LIVE_UPDATE = "live_update"
 ATTR_START_LIVE_ACTIVITY_TOKEN = "start_live_activity_token"

@@ -16,6 +16,8 @@ from homeassistant.components.mobile_app.const import (
     ATTR_APP_DATA,
     ATTR_COMMAND_SUCCESS,
     ATTR_HASS_COMMAND_ID,
+    ATTR_MEDIA_QUERY,
+    ATTR_MEDIA_TYPE,
     ATTR_PUSH_TOKEN,
     ATTR_PUSH_URL,
     ATTR_PUSH_WEBSOCKET_CHANNEL,
@@ -24,9 +26,12 @@ from homeassistant.components.mobile_app.const import (
     ATTR_TIMER_SECONDS,
     ATTR_TIMER_SKIP_UI,
     COMMAND_ALARM,
+    COMMAND_PLAY_MEDIA,
     COMMAND_TIMER,
     DATA_DEVICES,
     DOMAIN,
+    MEDIA_TYPE_AUDIOBOOK,
+    MEDIA_TYPE_MUSIC,
 )
 from homeassistant.core import Context, HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
@@ -205,6 +210,11 @@ async def test_alarm_tool_capability_gating(
             [COMMAND_ALARM, COMMAND_TIMER],
             ["mobile_app_set_alarm", "mobile_app_set_timer"],
             id="alarm-and-timer",
+        ),
+        pytest.param(
+            [COMMAND_PLAY_MEDIA],
+            ["mobile_app_play_media"],
+            id="media-only",
         ),
         pytest.param([], [], id="neither"),
         pytest.param(["unknown_command"], [], id="unknown-command"),
@@ -692,3 +702,60 @@ async def test_set_alarm_timeout_and_late_result(
     result = await client.receive_json()
     assert not result["success"]
     assert result["error"]["code"] == "not_found"
+
+
+@pytest.mark.parametrize(
+    ("tool_args", "expected_data"),
+    [
+        pytest.param(
+            {"media_type": MEDIA_TYPE_AUDIOBOOK},
+            {ATTR_MEDIA_TYPE: MEDIA_TYPE_AUDIOBOOK},
+            id="resume-audiobook",
+        ),
+        pytest.param(
+            {"media_type": MEDIA_TYPE_MUSIC, "query": "My Supermix"},
+            {
+                ATTR_MEDIA_TYPE: MEDIA_TYPE_MUSIC,
+                ATTR_MEDIA_QUERY: "My Supermix",
+            },
+            id="play-music-query",
+        ),
+    ],
+)
+async def test_play_media_success(
+    hass: HomeAssistant,
+    alarm_registration: AlarmRegistration,
+    hass_ws_client: WebSocketGenerator,
+    tool_args: dict[str, str],
+    expected_data: dict[str, str],
+) -> None:
+    """Test media playback request and successful phone acknowledgement."""
+    _set_capabilities(hass, alarm_registration, [COMMAND_PLAY_MEDIA])
+    client = await _subscribe_to_push(hass, hass_ws_client)
+    llm_context = _llm_context(alarm_registration)
+    platform = mobile_app_llm.async_get_tools(hass, llm_context, "assist")
+    assert platform is not None
+    tool = next(tool for tool in platform.tools if tool.name == "mobile_app_play_media")
+
+    task = hass.async_create_task(
+        tool.async_call(
+            hass,
+            llm.ToolInput(tool_name=tool.name, tool_args=tool_args),
+            llm_context,
+        )
+    )
+    notification = (await client.receive_json())["event"]
+    assert notification["message"] == COMMAND_PLAY_MEDIA
+    command_id = notification["data"].pop(ATTR_HASS_COMMAND_ID)
+    assert notification["data"] == expected_data
+
+    await client.send_json_auto_id(
+        {
+            "type": "mobile_app/command_result",
+            "webhook_id": WEBHOOK_ID,
+            ATTR_HASS_COMMAND_ID: command_id,
+            ATTR_COMMAND_SUCCESS: True,
+        }
+    )
+    assert (await client.receive_json())["success"]
+    assert await task == {"success": True}
