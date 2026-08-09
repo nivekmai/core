@@ -713,6 +713,16 @@ async def test_set_alarm_timeout_and_late_result(
             id="resume-audiobook",
         ),
         pytest.param(
+            {"media_type": MEDIA_TYPE_AUDIOBOOK, "query": "current book"},
+            {ATTR_MEDIA_TYPE: MEDIA_TYPE_AUDIOBOOK},
+            id="ignore-audiobook-placeholder-query",
+        ),
+        pytest.param(
+            {"media_type": MEDIA_TYPE_MUSIC, "query": "usual music"},
+            {ATTR_MEDIA_TYPE: MEDIA_TYPE_MUSIC},
+            id="ignore-generic-music-query",
+        ),
+        pytest.param(
             {"media_type": MEDIA_TYPE_MUSIC, "query": "My Supermix"},
             {
                 ATTR_MEDIA_TYPE: MEDIA_TYPE_MUSIC,

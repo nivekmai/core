@@ -40,6 +40,10 @@ from .const import (
 from .device_commands import DeviceCommandManager
 from .util import webhook_id_from_device_id
 
+_GENERIC_MUSIC_QUERIES = frozenset(
+    {"music", "my music", "usual music", "my usual music"}
+)
+
 
 def _supports_push(app_data: dict[str, Any]) -> bool:
     """Return whether registration data describes a usable push path."""
@@ -244,7 +248,11 @@ class PlayPhoneMediaTool(Tool):
         args = self.parameters(tool_input.tool_args)
         webhook_id, device_id, context = capable_device
         command_data = {ATTR_MEDIA_TYPE: args["media_type"]}
-        if query := args.get("query"):
+        if (
+            args["media_type"] == MEDIA_TYPE_MUSIC
+            and (query := args.get("query"))
+            and query.strip().casefold() not in _GENERIC_MUSIC_QUERIES
+        ):
             command_data[ATTR_MEDIA_QUERY] = query
 
         manager: DeviceCommandManager = hass.data[DOMAIN][DATA_DEVICE_COMMAND_MANAGER]
@@ -293,7 +301,7 @@ def async_get_tools(
         tools.append(PlayPhoneMediaTool())
         prompt_parts.append(
             "When the user says to play or resume their book, call "
-            "mobile_app_play_media with media_type audiobook and normally omit query. "
+            "mobile_app_play_media with media_type audiobook and always omit query. "
             "When the user asks to play music on this phone, call mobile_app_play_media "
             "with media_type music. Omit query for their usual music, or include the "
             "requested artist, album, song, or playlist."
