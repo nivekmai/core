@@ -231,9 +231,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     if supports_push(hass, webhook_id):
+        native_timer_ids: set[str] = set()
         entry.async_on_unload(
             intent.async_register_timer_handler(
-                hass, device.id, partial(async_handle_timer_event, hass, entry)
+                hass,
+                device.id,
+                partial(async_handle_timer_event, hass, entry, native_timer_ids),
             )
         )
 
